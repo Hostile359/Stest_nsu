@@ -26,6 +26,8 @@ var totalReqTime int64 = 0 // Суммарное время успешных з�
 var sampleRate = 48000
 var rescore = false
 var duration int           // Продолжительность работы теста в минутах
+var pauseMin = 0		   // Нижняя граница для рандома паузы между запросами
+var pauseMax = 0           // Верхняя граница для рандома паузы между запросами
 
 // Вывод сообщения воркера
 func workerPrint(msg string, workerNum int) {
@@ -120,7 +122,7 @@ func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup) {
 			break
 		}
 		
-		time.Sleep(time.Duration(rand.Intn(50)) * time.Millisecond)
+		time.Sleep(time.Duration(rand.Intn(pauseMax) + pauseMin) * time.Millisecond)
 		atomic.AddInt64(&reqCount, 1)
 		sendPcm(audio, host, workerNum)
 	}
@@ -138,6 +140,8 @@ func main() {
 	flag.IntVar(&duration, "duration", 30, "Test duration in mins")
 	flag.IntVar(&sampleRate, "sr", 48000, "Samplerate")
 	flag.BoolVar(&rescore, "rescore", false, "Use rescore")
+	flag.IntVar(&pauseMin, "pause_min", 0, "Low border of random for pause duration")
+	flag.IntVar(&pauseMax, "pause_max", 50, "High border of random for pause duration")
 	flag.Parse()
 
 	fmt.Println(filename, host, numWorkers, sampleRate, rescore)
