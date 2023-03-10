@@ -140,8 +140,8 @@ func main() {
 	flag.IntVar(&duration, "duration", 30, "Test duration in mins")
 	flag.IntVar(&sampleRate, "sr", 48000, "Samplerate")
 	flag.BoolVar(&rescore, "rescore", false, "Use rescore")
-	flag.IntVar(&pauseMin, "pause_min", 0, "Low border of random for pause duration")
-	flag.IntVar(&pauseMax, "pause_max", 50, "High border of random for pause duration")
+	flag.IntVar(&pauseMin, "pause_min", 1, "Low border of random for pause duration in ms")
+	flag.IntVar(&pauseMax, "pause_max", 50, "High border of random for pause duration in ms")
 	flag.Parse()
 
 	fmt.Println(filename, host, numWorkers, sampleRate, rescore)
