@@ -132,7 +132,7 @@ func main() {
 	var filename, host string
 	var numWorkers int
 
-	flag.StringVar(&filename, "filename", "", "Path to wav file")
+	flag.StringVar(&filename, "filename", "", "Path to pcm file")
 	flag.StringVar(&host, "host", "", "Host adreess with port (e.g. localhost:2700)")
 	flag.IntVar(&numWorkers, "worker", 1, "Workers count")
 	flag.IntVar(&duration, "duration", 30, "Test duration in mins")
