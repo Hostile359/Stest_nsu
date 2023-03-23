@@ -35,14 +35,14 @@ func workerPrint(msg string, workerNum int) {
 }
 
 // Отправка pcm аудиофайла на сервер
-func sendPcm(audio []byte, host string, workerNum int) {
+func sendPcm(audio []byte, host string, workerNum int) (string, error) {
 	ctx := context.Background()
 
-	start := time.Now()
+	
 	conn, _, err := websocket.Dial(ctx, host, nil)
 	if err != nil {
 		workerPrint(err.Error(), workerNum)
-		return
+		return "", err
 	}
 	defer conn.Close(websocket.StatusInternalError, "")
 	type Conf struct {
@@ -54,10 +54,10 @@ func sendPcm(audio []byte, host string, workerNum int) {
 	}{Config: Conf{SampleRate: sampleRate, Rescore: rescore}}
 	if err := wsjson.Write(ctx, conn, req); err != nil {
 		workerPrint(err.Error(), workerNum)
-		return
+		return "", err
 	}
 
-	var respText string
+	// var respText string
 	reader := bytes.NewReader(audio)
 
 	for {
@@ -67,24 +67,24 @@ func sendPcm(audio []byte, host string, workerNum int) {
 			err = conn.Write(ctx, websocket.MessageBinary, buf[:n])
 			if err != nil {
 				workerPrint(err.Error(), workerNum)
-				return
+				return "", err
 			}
 		} else if err == io.EOF {
 			err = conn.Write(ctx, websocket.MessageText, []byte("eof"))
 			if err != nil {
 				workerPrint(err.Error(), workerNum)
-				return
+				return "", err
 			}
 			break
 		} else {
 			workerPrint(err.Error(), workerNum)
-			return
+			return "", err
 		}
 
 		_, _, err = conn.Read(ctx)
 		if err != nil {
 			workerPrint(err.Error(), workerNum)
-			return
+			return "", err
 		}
 	}
 
@@ -98,22 +98,16 @@ func sendPcm(audio []byte, host string, workerNum int) {
 	err = wsjson.Read(ctx, conn, &respJson)
 	if err != nil {
 		workerPrint(err.Error(), workerNum)
-		return
+		return "", err
 	}
 	err = conn.Write(ctx, websocket.MessageText, []byte("OK"))
 	if err != nil {
 		workerPrint(err.Error(), workerNum)
-		return
+		return "", err
 	}
 	conn.Close(websocket.StatusNormalClosure, "")
-	elapsedTime := time.Since(start).Milliseconds()
-
-	respText = fmt.Sprintf("%#v, %dms", respJson, elapsedTime)
-	workerPrint(respText, workerNum)
-
-	atomic.AddInt64(&succes, 1)
-	atomic.AddInt64(&totalReqTime, elapsedTime)
-
+	
+	return fmt.Sprintf("%#v", respJson), nil
 }
 
 // Запуск воркера, итерантивно отправляющего аудио на распознование в течении duration минут.
@@ -122,14 +116,27 @@ func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	end := time.Now().Add(time.Duration(duration) * time.Minute)
-	for {
-		if time.Now().After(end) {
-			break
-		}
-		
-		time.Sleep(time.Duration(rand.Intn(pauseMax) + pauseMin) * time.Millisecond)
+	runLoop := true
+	for runLoop {
+		start := time.Now()
 		atomic.AddInt64(&reqCount, 1)
-		sendPcm(audio, host, workerNum)
+
+		for runLoop {	
+			if time.Now().After(end) {
+				runLoop = false
+			}
+
+			time.Sleep(time.Duration(rand.Intn(pauseMax) + pauseMin) * time.Millisecond)
+			if respJson, err := sendPcm(audio, host, workerNum); err == nil {
+				elapsedTime := time.Since(start).Milliseconds()
+				respText := fmt.Sprintf("%s, %dms", respJson, elapsedTime)
+				workerPrint(respText, workerNum)
+
+				atomic.AddInt64(&totalReqTime, elapsedTime)
+				atomic.AddInt64(&succes, 1)
+				break
+			}
+		}
 	}
 }
 
