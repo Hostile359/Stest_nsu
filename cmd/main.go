@@ -100,6 +100,11 @@ func sendPcm(audio []byte, host string, workerNum int) {
 		workerPrint(err.Error(), workerNum)
 		return
 	}
+	err = conn.Write(ctx, websocket.MessageText, []byte("OK"))
+	if err != nil {
+		workerPrint(err.Error(), workerNum)
+		return
+	}
 	conn.Close(websocket.StatusNormalClosure, "")
 	elapsedTime := time.Since(start).Milliseconds()
 
