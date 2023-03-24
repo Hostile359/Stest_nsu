@@ -1,3 +1,4 @@
 *.pcm
 bin
 *.vscode/
+*.csv

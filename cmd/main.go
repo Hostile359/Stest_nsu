@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 
@@ -23,6 +24,7 @@ import (
 var succes int64 = 0       // Количество успешных запросов
 var reqCount int64 = 0     // Общее количество запросов
 var totalReqTime int64 = 0 // Суммарное время успешных запросов
+var wsErors int64 = 0	   // Суммарное количетво ошибок вебсокета
 var sampleRate = 48000
 var rescore = false
 var duration int           // Продолжительность работы теста в минутах
@@ -112,8 +114,10 @@ func sendPcm(audio []byte, host string, workerNum int) (string, error) {
 
 // Запуск воркера, итерантивно отправляющего аудио на распознование в течении duration минут.
 // Каждый последующий запрос отправляется с задержкой 0-50ms
-func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup) {
+func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, maxChan chan int64, minChan chan int64) {
 	defer wg.Done()
+	var minTime int64 = math.MaxInt64
+	var maxTime int64 = math.MinInt64
 
 	end := time.Now().Add(time.Duration(duration) * time.Minute)
 	runLoop := true
@@ -134,10 +138,20 @@ func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup) {
 
 				atomic.AddInt64(&totalReqTime, elapsedTime)
 				atomic.AddInt64(&succes, 1)
+
+				if elapsedTime < minTime {
+					minTime = elapsedTime
+				} else if elapsedTime > maxTime {
+					maxTime = elapsedTime
+				}
+
 				break
 			}
+			atomic.AddInt64(&wsErors, 1)
 		}
 	}
+	maxChan <- maxTime
+	minChan <- minTime
 }
 
 func main() {
@@ -145,6 +159,11 @@ func main() {
 	var wg sync.WaitGroup
 	var filename, host string
 	var numWorkers int
+	var minTime int64 = math.MaxInt64
+	var maxTime int64 = math.MinInt64
+	var csvFilename string
+	var avgReqTime int64
+	var avgWsErrors int64
 
 	flag.StringVar(&filename, "filename", "", "Path to pcm file")
 	flag.StringVar(&host, "host", "", "Host adreess with port (e.g. localhost:2700)")
@@ -154,7 +173,11 @@ func main() {
 	flag.BoolVar(&rescore, "rescore", false, "Use rescore")
 	flag.IntVar(&pauseMin, "pause_min", 1, "Low border of random for pause duration in ms")
 	flag.IntVar(&pauseMax, "pause_max", 50, "High border of random for pause duration in ms")
+	flag.StringVar(&csvFilename, "csv", "", "Path to output csv file (creates new or append string to existing one)")
 	flag.Parse()
+
+	minChan := make(chan int64, numWorkers)
+	maxChan := make(chan int64, numWorkers)
 
 	fmt.Println(filename, host, numWorkers, sampleRate, rescore)
 	wsAsrHost := fmt.Sprintf("ws://%s", host)
@@ -178,12 +201,58 @@ func main() {
 	for wN := 1; wN <= numWorkers; wN++ {
 		log.Printf("Start worker: %d\n", wN)
 		wg.Add(1)
-		go workerProc(audio, wsAsrHost, wN, &wg)
+		go workerProc(audio, wsAsrHost, wN, &wg, maxChan, minChan)
 	}
 	wg.Wait()
+	close(maxChan)
+	close(minChan)
+
+	for t := range maxChan {
+		if t > maxTime {
+			maxTime = t
+		}
+	}
+
+	for t := range minChan {
+		if t < minTime {
+			minTime = t
+		}
+	}
 
 	log.Printf("Completed: %d/%d\n", succes, reqCount)
 	if succes > 0 {
-		log.Printf("All SUCCESED requests time: %dms, Average request time: %dms\n", totalReqTime, totalReqTime/succes)
+		avgReqTime = totalReqTime/succes
+		log.Printf("All SUCCESED requests time: %dms, Average request time: %dms, Max request time: %dms, min request time: %dms\n", totalReqTime, avgReqTime, maxTime, minTime)
+	}
+	if reqCount > 0 {
+		avgWsErrors = wsErors / reqCount
+		log.Printf("Errors count: %d, Average errors per request: %d\n", wsErors, avgWsErrors)
+	}
+	if csvFilename != "" {
+		writeCsvString := fmt.Sprintf("%s;%d;%dms;%dms;%dms;%d/%d;%dmin;%d\n", host, numWorkers, avgReqTime, maxTime, minTime, succes, reqCount, duration, avgWsErrors)
+		
+		if _, err := os.Stat(csvFilename); err != nil {
+			if os.IsNotExist(err) {
+				log.Print("Create new file")
+				writeCsvString = fmt.Sprint("host;workers;avg;max;min;reqs;duration;avgwserrors\n", writeCsvString)
+			}else {
+				log.Fatal(err)
+			}
+		}
+
+		log.Printf("Write res to %s\n", csvFilename)
+		f, err := os.OpenFile(csvFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer func() {
+			if err := f.Close(); err != nil {
+				log.Fatal(err)
+			}
+		}()
+		_, err = f.WriteString(writeCsvString)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 }
