@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
+	// "math"
 	"math/rand"
 	"os"
 
@@ -17,13 +17,11 @@ import (
 
 	"time"
 
+	"github.com/montanaflynn/stats"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
 
-var succes int64 = 0       // Количество успешных запросов
-var reqCount int64 = 0     // Общее количество запросов
-var totalReqTime int64 = 0 // Суммарное время успешных запросов
 var wsErors int64 = 0	   // Суммарное количетво ошибок вебсокета
 var sampleRate = 48000
 var rescore = false
@@ -59,7 +57,6 @@ func sendPcm(audio []byte, host string, workerNum int) (string, error) {
 		return "", err
 	}
 
-	// var respText string
 	reader := bytes.NewReader(audio)
 
 	for {
@@ -114,16 +111,16 @@ func sendPcm(audio []byte, host string, workerNum int) (string, error) {
 
 // Запуск воркера, итерантивно отправляющего аудио на распознование в течении duration минут.
 // Каждый последующий запрос отправляется с задержкой 0-50ms
-func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, maxChan chan int64, minChan chan int64) {
+// func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, maxChan chan int64, minChan chan int64, timeChan chan []int64) {
+func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64) {
 	defer wg.Done()
-	var minTime int64 = math.MaxInt64
-	var maxTime int64 = math.MinInt64
+
+	timesList := make([]int64, 0, duration * 60)
 
 	end := time.Now().Add(time.Duration(duration) * time.Minute)
 	runLoop := true
 	for runLoop {
 		start := time.Now()
-		atomic.AddInt64(&reqCount, 1)
 
 		for runLoop {	
 			if time.Now().After(end) {
@@ -136,22 +133,14 @@ func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, ma
 				respText := fmt.Sprintf("%s, %dms", respJson, elapsedTime)
 				workerPrint(respText, workerNum)
 
-				atomic.AddInt64(&totalReqTime, elapsedTime)
-				atomic.AddInt64(&succes, 1)
-
-				if elapsedTime < minTime {
-					minTime = elapsedTime
-				} else if elapsedTime > maxTime {
-					maxTime = elapsedTime
-				}
+				timesList = append(timesList, elapsedTime)
 
 				break
 			}
 			atomic.AddInt64(&wsErors, 1)
 		}
 	}
-	maxChan <- maxTime
-	minChan <- minTime
+	timeChan <- timesList
 }
 
 func main() {
@@ -159,10 +148,7 @@ func main() {
 	var wg sync.WaitGroup
 	var filename, host string
 	var numWorkers int
-	var minTime int64 = math.MaxInt64
-	var maxTime int64 = math.MinInt64
 	var csvFilename string
-	var avgReqTime int64
 	var avgWsErrors int64
 
 	flag.StringVar(&filename, "filename", "", "Path to pcm file")
@@ -176,9 +162,8 @@ func main() {
 	flag.StringVar(&csvFilename, "csv", "", "Path to output csv file (creates new or append string to existing one)")
 	flag.Parse()
 
-	minChan := make(chan int64, numWorkers)
-	maxChan := make(chan int64, numWorkers)
-
+	timeChan := make(chan []int64, numWorkers)
+	
 	fmt.Println(filename, host, numWorkers, sampleRate, rescore)
 	wsAsrHost := fmt.Sprintf("ws://%s", host)
 	f, err := os.Open(filename)
@@ -201,40 +186,41 @@ func main() {
 	for wN := 1; wN <= numWorkers; wN++ {
 		log.Printf("Start worker: %d\n", wN)
 		wg.Add(1)
-		go workerProc(audio, wsAsrHost, wN, &wg, maxChan, minChan)
+		go workerProc(audio, wsAsrHost, wN, &wg, timeChan)
 	}
 	wg.Wait()
-	close(maxChan)
-	close(minChan)
+	close(timeChan)
 
-	for t := range maxChan {
-		if t > maxTime {
-			maxTime = t
-		}
+	fullTimesList := make([]int64, 0, duration * numWorkers * 60)
+	for timesList := range timeChan {
+		fullTimesList = append(fullTimesList, timesList...)
 	}
 
-	for t := range minChan {
-		if t < minTime {
-			minTime = t
-		}
-	}
+	reqCount := int64(len(fullTimesList))
 
-	log.Printf("Completed: %d/%d\n", succes, reqCount)
-	if succes > 0 {
-		avgReqTime = totalReqTime/succes
-		log.Printf("All SUCCESED requests time: %dms, Average request time: %dms, Max request time: %dms, min request time: %dms\n", totalReqTime, avgReqTime, maxTime, minTime)
-	}
+	data := stats.LoadRawData(fullTimesList)
+	
+	maxTime, _ := data.Max()
+	minTime, _ := data.Min()
+	avgTime, _ := data.Mean()
+	medTime, _ := data.Median()
+	totalTime, _ := data.Sum()
+
+	log.Printf("Completed: %d\n", reqCount)
+	log.Printf("All requests time: %.0fms, Average request time: %.0fms, Median request time %.0fms, Max request time: %.0fms, min request time: %.0fms\n", totalTime, avgTime, medTime, maxTime, minTime)
+	
 	if reqCount > 0 {
 		avgWsErrors = wsErors / reqCount
 		log.Printf("Errors count: %d, Average errors per request: %d\n", wsErors, avgWsErrors)
 	}
+
 	if csvFilename != "" {
-		writeCsvString := fmt.Sprintf("%s;%d;%dms;%dms;%dms;%d/%d;%dmin;%d\n", host, numWorkers, avgReqTime, maxTime, minTime, succes, reqCount, duration, avgWsErrors)
+		writeCsvString := fmt.Sprintf("%s;%d;%.0fms;%.0fms;%.0fms;%.0fms;%d;%dmin;%d\n", host, numWorkers, avgTime, medTime, maxTime, minTime, reqCount, duration, avgWsErrors)
 		
 		if _, err := os.Stat(csvFilename); err != nil {
 			if os.IsNotExist(err) {
 				log.Print("Create new file")
-				writeCsvString = fmt.Sprint("host;workers;avg;max;min;reqs;duration;avgwserrors\n", writeCsvString)
+				writeCsvString = fmt.Sprint("host;workers;avg;median;max;min;reqs;duration;avgwserrors\n", writeCsvString)
 			}else {
 				log.Fatal(err)
 			}
