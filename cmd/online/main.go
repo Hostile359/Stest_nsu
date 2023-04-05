@@ -18,6 +18,7 @@ import (
 
 	"time"
 
+	"github.com/aybabtme/uniplot/histogram"
 	"github.com/montanaflynn/stats"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
@@ -180,6 +181,7 @@ func main() {
 	var numWorkers int
 	var csvFilename string
 	var avgWsErrors int64
+	var bins, width int
 
 	flag.StringVar(&filename, "filename", "", "Path to pcm file")
 	flag.StringVar(&host, "host", "", "Host adreess with port (e.g. localhost:2700)")
@@ -190,6 +192,8 @@ func main() {
 	flag.IntVar(&pauseMin, "pause_min", 1, "Low border of random for pause duration in ms")
 	flag.IntVar(&pauseMax, "pause_max", 50, "High border of random for pause duration in ms")
 	flag.StringVar(&csvFilename, "csv", "", "Path to output csv file (creates new or append string to existing one)")
+	flag.IntVar(&bins, "bins", 9, "Hitogram bins")
+	flag.IntVar(&width, "width", 5, "Hitogram width")
 	flag.Parse()
 
 	timeChan := make(chan []int64, numWorkers)
@@ -270,5 +274,13 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+	}
+
+	h := histogram.Hist(bins, data)
+	err = histogram.Fprintf(os.Stdout, h, histogram.Linear(width), func(v float64) string {
+		return fmt.Sprintf("%dms", int(v)) //time.Duration(v).Milliseconds()
+	})
+	if err != nil {
+		log.Fatal(err)
 	}
 }
