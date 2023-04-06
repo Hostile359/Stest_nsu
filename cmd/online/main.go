@@ -182,6 +182,7 @@ func main() {
 	var csvFilename string
 	var avgWsErrors int64
 	var bins, width int
+	var name string
 
 	flag.StringVar(&filename, "filename", "", "Path to pcm file")
 	flag.StringVar(&host, "host", "", "Host adreess with port (e.g. localhost:2700)")
@@ -194,7 +195,12 @@ func main() {
 	flag.StringVar(&csvFilename, "csv", "", "Path to output csv file (creates new or append string to existing one)")
 	flag.IntVar(&bins, "bins", 9, "Hitogram bins")
 	flag.IntVar(&width, "width", 5, "Hitogram width")
+	flag.StringVar(&name, "run_name", "", "Name of the test run(if empty, it will be the same as filename)")
 	flag.Parse()
+
+	if name == "" {
+		name = filename
+	}
 
 	timeChan := make(chan []int64, numWorkers)
 	
@@ -249,12 +255,12 @@ func main() {
 	}
 
 	if csvFilename != "" {
-		writeCsvString := fmt.Sprintf("%s;%d;%.0fms;%.0fms;%.0fms;%.0fms;%d;%dmin;%d\n", host, numWorkers, avgTime, medTime, maxTime, minTime, reqCount, duration, avgWsErrors)
+		writeCsvString := fmt.Sprintf("%s;%s;%d;%.0fms;%.0fms;%.0fms;%.0fms;%d;%dmin;%d\n", name, host, numWorkers, avgTime, medTime, maxTime, minTime, reqCount, duration, avgWsErrors)
 		
 		if _, err := os.Stat(csvFilename); err != nil {
 			if os.IsNotExist(err) {
 				log.Print("Create new file")
-				writeCsvString = fmt.Sprint("host;workers;avg;median;max;min;reqs;duration;avgwserrors\n", writeCsvString)
+				writeCsvString = fmt.Sprint("name;host;workers;avg;median;max;min;reqs;duration;avgwserrors\n", writeCsvString)
 			}else {
 				log.Fatal(err)
 			}
