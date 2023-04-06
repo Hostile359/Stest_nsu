@@ -183,6 +183,7 @@ func main() {
 	var avgWsErrors int64
 	var bins, width int
 	var name string
+	var plotFilename string
 
 	flag.StringVar(&filename, "filename", "", "Path to pcm file")
 	flag.StringVar(&host, "host", "", "Host adreess with port (e.g. localhost:2700)")
@@ -196,6 +197,7 @@ func main() {
 	flag.IntVar(&bins, "bins", 9, "Hitogram bins")
 	flag.IntVar(&width, "width", 5, "Hitogram width")
 	flag.StringVar(&name, "run_name", "", "Name of the test run(if empty, it will be the same as filename)")
+	flag.StringVar(&plotFilename, "plt", "", "Path to file for plot histogram(if empty, it will be ploted at stdout)")
 	flag.Parse()
 
 	if name == "" {
@@ -282,8 +284,22 @@ func main() {
 		}
 	}
 
+	var plotWriter io.Writer
+
+	if plotFilename != "" {
+		f, err := os.Create(plotFilename)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+		plotWriter = f
+		log.Printf("Write plt to %s\n", plotFilename)
+	} else {
+		plotWriter = os.Stdout
+	}
+
 	h := histogram.Hist(bins, data)
-	err = histogram.Fprintf(os.Stdout, h, histogram.Linear(width), func(v float64) string {
+	err = histogram.Fprintf(plotWriter, h, histogram.Linear(width), func(v float64) string {
 		return fmt.Sprintf("%dms", int(v)) //time.Duration(v).Milliseconds()
 	})
 	if err != nil {
