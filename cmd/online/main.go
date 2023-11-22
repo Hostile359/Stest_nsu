@@ -24,12 +24,39 @@ import (
 	"nhooyr.io/websocket/wsjson"
 )
 
-var wsErors int64 = 0	   // Суммарное количетво ошибок вебсокета
+var wsErors int64 = 0 // Суммарное количетво ошибок вебсокета
 var sampleRate = 48000
 var rescore = false
-var duration int           // Продолжительность работы теста в минутах
-var pauseMin = 0		   // Нижняя граница для рандома паузы между запросами
-var pauseMax = 0           // Верхняя граница для рандома паузы между запросами
+var duration int // Продолжительность работы теста в минутах
+var pauseMin = 0 // Нижняя граница для рандома паузы между запросами
+var pauseMax = 0 // Верхняя граница для рандома паузы между запросами
+
+type audioInfo struct {
+	filename string
+	audio []byte
+}
+
+func readFile(filename string) ([]byte, error) {
+	var audio []byte
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	buf := make([]byte, 1024)
+	for {
+		_, err := f.Read(buf)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		audio = append(audio, buf...)
+	}
+	return audio, nil
+}
 
 // Вывод сообщения воркера
 func workerPrint(msg string, workerNum int) {
@@ -45,7 +72,7 @@ func timer(sendChan chan int, recvChan chan int, timeChan chan time.Duration) {
 
 	start := time.Now()
 
-	<- recvChan // Получение сигнала о завершении
+	<-recvChan // Получение сигнала о завершении
 
 	timeChan <- time.Since(start) // Отправка итогового времени
 	close(timeChan)
@@ -56,9 +83,9 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 	ctx := context.Background()
 
 	recvChan := make(chan int, 4) // канал для получения сигналов на поссылку чанка
-	sendChan := make(chan int) // канал для отправки сигнала о завершении распознования
+	sendChan := make(chan int)    // канал для отправки сигнала о завершении распознования
 	timeChan := make(chan time.Duration)
-	
+
 	go timer(recvChan, sendChan, timeChan)
 
 	conn, _, err := websocket.Dial(ctx, host, nil)
@@ -81,7 +108,7 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 
 	reader := bytes.NewReader(audio)
 
-	buf := make([]byte, int(float64(sampleRate * 2) * 0.25)) // буфер равный 250 мс
+	buf := make([]byte, int(float64(sampleRate*2)*0.25)) // буфер равный 250 мс
 	var respJson map[string]interface{}
 
 	for {
@@ -91,7 +118,7 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 			return "", time.Duration(0), err
 		}
 
-		i := <- recvChan
+		i := <-recvChan
 
 		err = conn.Write(ctx, websocket.MessageBinary, buf[:n])
 		if err != nil {
@@ -137,29 +164,30 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 	}
 	conn.Close(websocket.StatusNormalClosure, "")
 
-	elapsedTime := <- timeChan
+	elapsedTime := <-timeChan
 
 	return fmt.Sprintf("%#v", respJson), elapsedTime, nil
 }
 
-// Запуск воркера, итерантивно отправляющего аудио на распознование в течении duration минут.
+// Запуск воркера, итерантивно отправляющего случайное аудио из списка на распознование в течении duration минут.
 // Каждый последующий запрос отправляется с задержкой 0-50ms
 // func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, maxChan chan int64, minChan chan int64, timeChan chan []int64) {
-func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64) {
+func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64) {
 	defer wg.Done()
 
-	timesList := make([]int64, 0, duration * 60)
+	timesList := make([]int64, 0, duration*60)
 
 	end := time.Now().Add(time.Duration(duration) * time.Minute)
 	runLoop := true
 	for runLoop {
-		for runLoop {	
+		for runLoop {
 			if time.Now().After(end) {
 				runLoop = false
 			}
 
-			time.Sleep(time.Duration(rand.Intn(pauseMax) + pauseMin) * time.Millisecond)
-			if respJson, elapsedTime, err := sendPcm(audio, host, workerNum); err == nil {
+			time.Sleep(time.Duration(rand.Intn(pauseMax)+pauseMin) * time.Millisecond)
+			audioIndex := rand.Intn(len(audios))
+			if respJson, elapsedTime, err := sendPcm(audios[audioIndex].audio, host, workerNum); err == nil {
 				respText := fmt.Sprintf("%s, %dms", respJson, elapsedTime.Milliseconds())
 				workerPrint(respText, workerNum)
 
@@ -175,9 +203,9 @@ func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, ti
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())	
+	rand.Seed(time.Now().UnixNano())
 	var wg sync.WaitGroup
-	var filename, host string
+	var pcmPath, host string
 	var numWorkers int
 	var csvFilename string
 	var avgWsErrors int64
@@ -185,7 +213,7 @@ func main() {
 	var name string
 	var plotFilename string
 
-	flag.StringVar(&filename, "filename", "", "Path to pcm file")
+	flag.StringVar(&pcmPath, "pcmpath", "", "Path to dir with pcm files")
 	flag.StringVar(&host, "host", "", "Host adreess with port (e.g. localhost:2700)")
 	flag.IntVar(&numWorkers, "worker", 1, "Workers count")
 	flag.IntVar(&duration, "duration", 30, "Test duration in mins")
@@ -201,47 +229,46 @@ func main() {
 	flag.Parse()
 
 	if name == "" {
-		name = filename
+		name = pcmPath
 	}
 
 	timeChan := make(chan []int64, numWorkers)
-	
-	fmt.Println(filename, host, numWorkers, sampleRate, rescore)
+
+	fmt.Println(pcmPath, host, numWorkers, sampleRate, rescore)
 	wsAsrHost := fmt.Sprintf("ws://%s", host)
-	f, err := os.Open(filename)
+	files, err := os.ReadDir(pcmPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	audio := make([]byte, 1024)
-	buf := make([]byte, 1024)
-	for {
-		_, err := f.Read(buf)
-		if err == io.EOF {
-			break
-		}
+	audios := make([]audioInfo, 0)
+	for _, f := range files {
+		fname := fmt.Sprint(pcmPath, "/", f.Name())
+		fmt.Println(fname)
+		audio_i, err := readFile(fname)
 		if err != nil {
 			log.Fatal(err)
 		}
-		audio = append(audio, buf...)
+		audios = append(audios, audioInfo{filename: f.Name(), audio: audio_i})
 	}
+
 	log.Println("Start testing")
 	for wN := 1; wN <= numWorkers; wN++ {
 		log.Printf("Start worker: %d\n", wN)
 		wg.Add(1)
-		go workerProc(audio, wsAsrHost, wN, &wg, timeChan)
+		go workerProc(audios, wsAsrHost, wN, &wg, timeChan)
 	}
 	wg.Wait()
 	close(timeChan)
 
-	fullTimesList := make([]int64, 0, duration * numWorkers * 60)
+	fullTimesList := make([]int64, 0, duration*numWorkers*60)
 	for timesList := range timeChan {
 		fullTimesList = append(fullTimesList, timesList...)
 	}
-	
+
 	reqCount := int64(len(fullTimesList))
 
 	data := stats.LoadRawData(fullTimesList)
-	
+
 	maxTime, _ := data.Max()
 	minTime, _ := data.Min()
 	avgTime, _ := data.Mean()
@@ -250,7 +277,7 @@ func main() {
 
 	log.Printf("Completed: %d\n", reqCount)
 	log.Printf("All requests time: %.0fms, Average request time: %.0fms, Median request time %.0fms, Max request time: %.0fms, min request time: %.0fms\n", totalTime, avgTime, medTime, maxTime, minTime)
-	
+
 	if reqCount > 0 {
 		avgWsErrors = wsErors / reqCount
 		log.Printf("Errors count: %d, Average errors per request: %d\n", wsErors, avgWsErrors)
@@ -258,12 +285,12 @@ func main() {
 
 	if csvFilename != "" {
 		writeCsvString := fmt.Sprintf("%s;%s;%d;%.0fms;%.0fms;%.0fms;%.0fms;%d;%dmin;%d\n", name, host, numWorkers, avgTime, medTime, maxTime, minTime, reqCount, duration, avgWsErrors)
-		
+
 		if _, err := os.Stat(csvFilename); err != nil {
 			if os.IsNotExist(err) {
 				log.Print("Create new file")
 				writeCsvString = fmt.Sprint("name;host;workers;avg;median;max;min;reqs;duration;avgwserrors\n", writeCsvString)
-			}else {
+			} else {
 				log.Fatal(err)
 			}
 		}
