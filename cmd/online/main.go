@@ -9,11 +9,9 @@ import (
 	"io"
 	"log"
 
-	// "math"
 	"math/rand"
 	"os"
 
-	// "strings"
 	"sync"
 	"sync/atomic"
 
@@ -60,14 +58,14 @@ func readFile(filename string) ([]byte, error) {
 
 	buf := make([]byte, 1024)
 	for {
-		_, err := f.Read(buf)
+		n, err := f.Read(buf)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, err
 		}
-		audio = append(audio, buf...)
+		audio = append(audio, buf[:n]...)
 	}
 	return audio, nil
 }
@@ -77,8 +75,8 @@ func workerPrint(msg string, workerNum int) {
 	fmt.Printf("Worker: %d, Msg: %s\n", workerNum, msg)
 }
 
-func timer(sendChan chan int, recvChan chan int, timeChan chan time.Duration) {
-	for i := 1; i <= 4; i++ {
+func timer(sendChan chan int, recvChan chan int, timeChan chan time.Duration, stepCount int) {
+	for i := 1; i <= stepCount; i++ {
 		time.Sleep(time.Duration(250) * time.Millisecond)
 		sendChan <- i // Отпрвка сигнала для поссылки чанка
 	}
@@ -96,11 +94,16 @@ func timer(sendChan chan int, recvChan chan int, timeChan chan time.Duration) {
 func sendPcm(audio []byte, host string, workerNum int) (*AudioJson, time.Duration, error) {
 	ctx := context.Background()
 
-	recvChan := make(chan int, 4) // канал для получения сигналов на поссылку чанка
-	sendChan := make(chan int)    // канал для отправки сигнала о завершении распознования
+	bufSize := int(float64(sampleRate*2) * 0.25)
+	if len(audio)%bufSize != 0 { // длина аудио должна быть кратна bufSize
+		return nil, 0, fmt.Errorf("wrong audio len %d %% %d != 0", len(audio), bufSize)
+	}
+	stepCount := len(audio) / bufSize
+	recvChan := make(chan int, stepCount) // канал для получения сигналов на поссылку чанка
+	sendChan := make(chan int)            // канал для отправки сигнала о завершении распознования
 	timeChan := make(chan time.Duration)
 
-	go timer(recvChan, sendChan, timeChan)
+	go timer(recvChan, sendChan, timeChan, stepCount)
 
 	conn, _, err := websocket.Dial(ctx, host, nil)
 	if err != nil {
@@ -122,7 +125,7 @@ func sendPcm(audio []byte, host string, workerNum int) (*AudioJson, time.Duratio
 
 	reader := bytes.NewReader(audio)
 
-	buf := make([]byte, int(float64(sampleRate*2)*0.25)) // буфер равный 250 мс
+	buf := make([]byte, bufSize) // буфер равный 250 мс
 	var respJson AudioJson
 
 	for {
@@ -148,9 +151,9 @@ func sendPcm(audio []byte, host string, workerNum int) (*AudioJson, time.Duratio
 			return nil, time.Duration(0), err
 		}
 
-		workerPrint(fmt.Sprintf("%d/4: %#v", i, respJson), workerNum)
+		workerPrint(fmt.Sprintf("%d/%d: %#v", i, stepCount, respJson), workerNum)
 
-		if i == 4 {
+		if i == stepCount {
 			if respJson.Status == "result" {
 				sendChan <- 0
 				close(sendChan)
