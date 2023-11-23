@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -34,6 +35,19 @@ var pauseMax = 0 // Верхняя граница для рандома пауз
 type audioInfo struct {
 	filename string
 	audio []byte
+}
+
+type AudioJson struct {
+	AsrRes string `json:"asr_result"`
+	Command string `json:"command"`
+	RescRes string `json:"rescoring_result"`
+	Status string `json:"status"`
+	Time float32 `json:"time"`
+}
+
+type AudioRes struct{
+	AudioJson
+	Filename string `json:"filename"`
 }
 
 func readFile(filename string) ([]byte, error) {
@@ -79,7 +93,7 @@ func timer(sendChan chan int, recvChan chan int, timeChan chan time.Duration) {
 }
 
 // Отправка pcm аудиофайла на сервер
-func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, error) {
+func sendPcm(audio []byte, host string, workerNum int) (*AudioJson, time.Duration, error) {
 	ctx := context.Background()
 
 	recvChan := make(chan int, 4) // канал для получения сигналов на поссылку чанка
@@ -91,7 +105,7 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 	conn, _, err := websocket.Dial(ctx, host, nil)
 	if err != nil {
 		workerPrint(err.Error(), workerNum)
-		return "", time.Duration(0), err
+		return nil, time.Duration(0), err
 	}
 	defer conn.Close(websocket.StatusInternalError, "")
 	type Conf struct {
@@ -103,19 +117,19 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 	}{Config: Conf{SampleRate: sampleRate, Rescore: rescore}}
 	if err := wsjson.Write(ctx, conn, req); err != nil {
 		workerPrint(err.Error(), workerNum)
-		return "", time.Duration(0), err
+		return nil, time.Duration(0), err
 	}
 
 	reader := bytes.NewReader(audio)
 
 	buf := make([]byte, int(float64(sampleRate*2)*0.25)) // буфер равный 250 мс
-	var respJson map[string]interface{}
+	var respJson AudioJson
 
 	for {
 		n, err := reader.Read(buf)
 		if err != nil {
 			close(sendChan)
-			return "", time.Duration(0), err
+			return nil, time.Duration(0), err
 		}
 
 		i := <-recvChan
@@ -124,20 +138,20 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 		if err != nil {
 			workerPrint(err.Error(), workerNum)
 			close(sendChan)
-			return "", time.Duration(0), err
+			return nil, time.Duration(0), err
 		}
 
 		err = wsjson.Read(ctx, conn, &respJson)
 		if err != nil {
 			workerPrint(err.Error(), workerNum)
 			close(sendChan)
-			return "", time.Duration(0), err
+			return nil, time.Duration(0), err
 		}
 
 		workerPrint(fmt.Sprintf("%d/4: %#v", i, respJson), workerNum)
 
 		if i == 4 {
-			if respJson["status"] == "result" {
+			if respJson.Status == "result" {
 				sendChan <- 0
 				close(sendChan)
 				break
@@ -147,14 +161,14 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 			if err != nil {
 				workerPrint(err.Error(), workerNum)
 				close(sendChan)
-				return "", time.Duration(0), err
+				return nil, time.Duration(0), err
 			}
 
 			err = wsjson.Read(ctx, conn, &respJson)
 			if err != nil {
 				workerPrint(err.Error(), workerNum)
 				close(sendChan)
-				return "", time.Duration(0), err
+				return nil, time.Duration(0), err
 			}
 
 			sendChan <- 0
@@ -166,16 +180,16 @@ func sendPcm(audio []byte, host string, workerNum int) (string, time.Duration, e
 
 	elapsedTime := <-timeChan
 
-	return fmt.Sprintf("%#v", respJson), elapsedTime, nil
+	return &respJson, elapsedTime, nil
 }
 
 // Запуск воркера, итерантивно отправляющего случайное аудио из списка на распознование в течении duration минут.
 // Каждый последующий запрос отправляется с задержкой 0-50ms
-// func workerProc(audio []byte, host string, workerNum int, wg *sync.WaitGroup, maxChan chan int64, minChan chan int64, timeChan chan []int64) {
-func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64) {
+func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64, resChan chan[]AudioRes) {
 	defer wg.Done()
 
 	timesList := make([]int64, 0, duration*60)
+	resList := make([]AudioRes, 0, duration*60)
 
 	end := time.Now().Add(time.Duration(duration) * time.Minute)
 	runLoop := true
@@ -188,10 +202,16 @@ func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGro
 			time.Sleep(time.Duration(rand.Intn(pauseMax)+pauseMin) * time.Millisecond)
 			audioIndex := rand.Intn(len(audios))
 			if respJson, elapsedTime, err := sendPcm(audios[audioIndex].audio, host, workerNum); err == nil {
-				respText := fmt.Sprintf("%s, %dms", respJson, elapsedTime.Milliseconds())
+				respText := fmt.Sprintf("%#v, %dms", respJson, elapsedTime.Milliseconds())
 				workerPrint(respText, workerNum)
 
 				timesList = append(timesList, elapsedTime.Milliseconds())
+
+				res := AudioRes{
+					Filename: audios[audioIndex].filename,
+					AudioJson: *respJson,
+				}
+				resList = append(resList, res)
 				break
 			} else {
 				workerPrint(err.Error(), workerNum)
@@ -200,6 +220,7 @@ func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGro
 		}
 	}
 	timeChan <- timesList
+	resChan <- resList
 }
 
 func main() {
@@ -212,6 +233,7 @@ func main() {
 	var bins, width int
 	var name string
 	var plotFilename string
+	var resFilename string
 
 	flag.StringVar(&pcmPath, "pcmpath", "", "Path to dir with pcm files")
 	flag.StringVar(&host, "host", "", "Host adreess with port (e.g. localhost:2700)")
@@ -226,6 +248,7 @@ func main() {
 	flag.IntVar(&width, "width", 5, "Hitogram width")
 	flag.StringVar(&name, "run_name", "", "Name of the test run(if empty, it will be the same as filename)")
 	flag.StringVar(&plotFilename, "plt", "", "Path to file for plot histogram(if empty, it will be ploted at stdout)")
+	flag.StringVar(&resFilename, "res_file", "res.json", "Path to output json file with asr results")
 	flag.Parse()
 
 	if name == "" {
@@ -233,6 +256,7 @@ func main() {
 	}
 
 	timeChan := make(chan []int64, numWorkers)
+	resChan := make(chan []AudioRes, numWorkers)
 
 	fmt.Println(pcmPath, host, numWorkers, sampleRate, rescore)
 	wsAsrHost := fmt.Sprintf("ws://%s", host)
@@ -255,14 +279,32 @@ func main() {
 	for wN := 1; wN <= numWorkers; wN++ {
 		log.Printf("Start worker: %d\n", wN)
 		wg.Add(1)
-		go workerProc(audios, wsAsrHost, wN, &wg, timeChan)
+		go workerProc(audios, wsAsrHost, wN, &wg, timeChan, resChan)
 	}
 	wg.Wait()
 	close(timeChan)
+	close(resChan)
 
 	fullTimesList := make([]int64, 0, duration*numWorkers*60)
 	for timesList := range timeChan {
 		fullTimesList = append(fullTimesList, timesList...)
+	}
+
+	fullResList := make([]AudioRes, 0, duration*numWorkers*60)
+	for resList := range resChan {
+		fullResList = append(fullResList, resList...)
+	}
+	resJson, err := json.MarshalIndent(fullResList, "", "\t")
+	if err != nil {
+		log.Fatal(err)
+	}
+	resF, err := os.Create(resFilename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer resF.Close()
+	if _, err := resF.Write(resJson); err != nil {
+		log.Fatal(err)
 	}
 
 	reqCount := int64(len(fullTimesList))
