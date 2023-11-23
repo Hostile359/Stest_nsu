@@ -34,18 +34,18 @@ var pauseMax = 0 // Верхняя граница для рандома пауз
 
 type audioInfo struct {
 	filename string
-	audio []byte
+	audio    []byte
 }
 
 type AudioJson struct {
-	AsrRes string `json:"asr_result"`
-	Command string `json:"command"`
-	RescRes string `json:"rescoring_result"`
-	Status string `json:"status"`
-	Time float32 `json:"time"`
+	AsrRes  string  `json:"asr_result"`
+	Command string  `json:"command"`
+	RescRes string  `json:"rescoring_result"`
+	Status  string  `json:"status"`
+	Time    float32 `json:"time"`
 }
 
-type AudioRes struct{
+type AudioRes struct {
 	AudioJson
 	Filename string `json:"filename"`
 }
@@ -185,7 +185,7 @@ func sendPcm(audio []byte, host string, workerNum int) (*AudioJson, time.Duratio
 
 // Запуск воркера, итерантивно отправляющего случайное аудио из списка на распознование в течении duration минут.
 // Каждый последующий запрос отправляется с задержкой 0-50ms
-func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64, resChan chan[]AudioRes) {
+func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64, resChan chan []AudioRes) {
 	defer wg.Done()
 
 	timesList := make([]int64, 0, duration*60)
@@ -194,28 +194,25 @@ func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGro
 	end := time.Now().Add(time.Duration(duration) * time.Minute)
 	runLoop := true
 	for runLoop {
-		for runLoop {
-			if time.Now().After(end) {
-				runLoop = false
+		if time.Now().After(end) {
+			runLoop = false
+		}
+
+		time.Sleep(time.Duration(rand.Intn(pauseMax)+pauseMin) * time.Millisecond)
+		audioIndex := rand.Intn(len(audios))
+		if respJson, elapsedTime, err := sendPcm(audios[audioIndex].audio, host, workerNum); err == nil {
+			respText := fmt.Sprintf("%#v, %dms", respJson, elapsedTime.Milliseconds())
+			workerPrint(respText, workerNum)
+
+			timesList = append(timesList, elapsedTime.Milliseconds())
+
+			res := AudioRes{
+				Filename:  audios[audioIndex].filename,
+				AudioJson: *respJson,
 			}
-
-			time.Sleep(time.Duration(rand.Intn(pauseMax)+pauseMin) * time.Millisecond)
-			audioIndex := rand.Intn(len(audios))
-			if respJson, elapsedTime, err := sendPcm(audios[audioIndex].audio, host, workerNum); err == nil {
-				respText := fmt.Sprintf("%#v, %dms", respJson, elapsedTime.Milliseconds())
-				workerPrint(respText, workerNum)
-
-				timesList = append(timesList, elapsedTime.Milliseconds())
-
-				res := AudioRes{
-					Filename: audios[audioIndex].filename,
-					AudioJson: *respJson,
-				}
-				resList = append(resList, res)
-				break
-			} else {
-				workerPrint(err.Error(), workerNum)
-			}
+			resList = append(resList, res)
+		} else {
+			workerPrint(err.Error(), workerNum)
 			atomic.AddInt64(&wsErors, 1)
 		}
 	}
