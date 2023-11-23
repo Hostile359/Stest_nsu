@@ -1,5 +1,8 @@
 # Stest nsu
 
+Program for stress test online ASR websocket service.
+All test audio files should be converted to pcm before tests and their length should be multiple by 250ms.
+
 ## Requirements
   go 1.18+
 
@@ -16,12 +19,12 @@ go build -o ./bin/prog ./cmd/main.go
 
 ## Run example
 ```bash
-./bin/prog -filename auido.pcm -host localhost:2700 -sr 16000 -duration 5 -worker 500 -csv out.csv
+./bin/prog -pcmpath pcm_dir/ -host localhost:2700 -sr 16000 -duration 5 -worker 500 -csv out.csv -res_file out.json
 ```
 
 ## Run without compile, using go
 ```bash
-go run ./cmd/main.go -filename auido.pcm -host localhost:2700 -sr 16000 -duration 5 -worker 500 -csv out.csv
+go run ./cmd/main.go -pcmpath pcm_dir/ -host localhost:2700 -sr 16000 -duration 5 -worker 500 -csv out.csv -res_file out.json
 ```
 
 ## Prety print csv in terminal
