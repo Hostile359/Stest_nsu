@@ -31,3 +31,16 @@ go run ./cmd/main.go -pcmpath pcm_dir/ -host localhost:2700 -sr 16000 -duration 
 ```bash
 cat <csvfile> | column -t -s ';'
 ```
+## Monitoring with grafana
+
+You can visualize client latency with grafana and prometheus. It has a default dashboard which shows 99, 90 and 50 percentiles for client latency.
+
+Run monitoring services
+```bash
+docker-compose -f monitoring/docker-compose.yml up -d
+```
+Down monitoring services
+```bash
+docker-compose -f monitoring/docker-compose.yml down
+```
+Default credentials is username: "admin", password: "admin"

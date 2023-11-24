@@ -4,3 +4,8 @@ bin
 *.csv
 *.plt
 utils
+*.json
+
+!monitoring/dashboards/dashboard.json
+
+grafana_data*

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 
 	"math/rand"
 	"os"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/aybabtme/uniplot/histogram"
 	"github.com/montanaflynn/stats"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -151,7 +154,7 @@ func sendPcm(audio []byte, host string, workerNum int) (*AudioJson, time.Duratio
 			return nil, time.Duration(0), err
 		}
 
-		workerPrint(fmt.Sprintf("%d/%d: %#v", i, stepCount, respJson), workerNum)
+		// workerPrint(fmt.Sprintf("%d/%d: %#v", i, stepCount, respJson), workerNum)
 
 		if i == stepCount {
 			if respJson.Status == "result" {
@@ -188,7 +191,9 @@ func sendPcm(audio []byte, host string, workerNum int) (*AudioJson, time.Duratio
 
 // Запуск воркера, итерантивно отправляющего случайное аудио из списка на распознование в течении duration минут.
 // Каждый последующий запрос отправляется с задержкой 0-50ms
-func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGroup, timeChan chan []int64, resChan chan []AudioRes) {
+func workerProc(audios []audioInfo, host string, workerNum int, 
+				wg *sync.WaitGroup, timeChan chan []int64, resChan chan []AudioRes,
+				m *metrics) {
 	defer wg.Done()
 
 	timesList := make([]int64, 0, duration*60)
@@ -208,6 +213,8 @@ func workerProc(audios []audioInfo, host string, workerNum int, wg *sync.WaitGro
 			workerPrint(respText, workerNum)
 
 			timesList = append(timesList, elapsedTime.Milliseconds())
+
+			m.duration.With(prometheus.Labels{}).Observe(elapsedTime.Seconds())
 
 			res := AudioRes{
 				Filename:  audios[audioIndex].filename,
@@ -275,11 +282,21 @@ func main() {
 		audios = append(audios, audioInfo{filename: f.Name(), audio: audio_i})
 	}
 
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	stopServer := make(chan struct{}, 1)
+	go startPromApi(stopServer, reg)
+	defer func () {
+		stopServer <- struct{}{}
+	} ()
+
+
 	log.Println("Start testing")
 	for wN := 1; wN <= numWorkers; wN++ {
 		log.Printf("Start worker: %d\n", wN)
 		wg.Add(1)
-		go workerProc(audios, wsAsrHost, wN, &wg, timeChan, resChan)
+		go workerProc(audios, wsAsrHost, wN, &wg, timeChan, resChan, m)
 	}
 	wg.Wait()
 	close(timeChan)
@@ -372,6 +389,29 @@ func main() {
 		return fmt.Sprintf("%dms", int(v)) //time.Duration(v).Milliseconds()
 	})
 	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func startPromApi(stopServer chan struct{}, reg *prometheus.Registry) {
+	pMux := http.NewServeMux()
+	promHandler := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+	pMux.Handle("/metrics", promHandler)
+
+	srv := &http.Server{
+		Addr: ":8081",
+		Handler: pMux,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	<-stopServer
+	
+	if err := srv.Shutdown(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
