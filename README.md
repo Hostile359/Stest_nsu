@@ -4,7 +4,7 @@ Program for stress test online ASR websocket service.
 All test audio files should be converted to pcm before tests and their length should be multiple by 250ms.
 
 ## Requirements
-  go 1.18+
+  go 1.21+
 
 ## Compile
 
